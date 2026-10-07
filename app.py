@@ -1,15 +1,3 @@
-Analisando o código enviado, percebe-se a razão de a aplicação não pedir login para aceder às planilhas e de continuar a ler o ficheiro links.json local:
-
-Leitura de JSON Local (links.json): O código ainda utiliza a classe LinkManager apontando para o ficheiro links.json, sem qualquer conexão ao MongoDB (pymongo).
-
-Falta de Login Inicial: O método run() desenha imediatamente as abas ("Acessar Planilhas" e "Área Administrativa") para qualquer visitante. A senha só é pedida dentro da aba de administração, para editar os links, permitindo que a visualização das planilhas fique aberta publicamente.
-
-Falta de Autenticação por Empresa (Multi-tenant): Não existem os perfis com senhas específicas (AVEP2026# e UNIR2026$), nem o suporte a seleção/cadastro de empresas.
-
-Código Refatorado e Corrigido (app.py)
-Abaixo está o código atualizado que integra o MongoDB Atlas (lendo a MONGO_URI das configurações/secrets) e exige o login por empresa antes de renderizar as planilhas:
-
-Python
 import os
 import streamlit as st
 from pymongo import MongoClient
