@@ -205,4 +205,62 @@ class SpreadsheetApp:
                 st.link_button("Abrir 🔗", url)
 
     def render_admin_tab(self, company_data: dict):
-        company_id = company_data.get("company_id
+        company_id = company_data.get("company_id")
+        links = company_data.get("links", {})
+
+        st.subheader("➕ Adicionar Nova Planilha")
+        with st.form("form_add_link", clear_on_submit=True):
+            new_title = st.text_input("Nome da Planilha:")
+            new_url = st.text_input("URL da Planilha:")
+            add_submitted = st.form_submit_button("Adicionar Planilha")
+
+            if add_submitted:
+                if new_title.strip() and new_url.strip():
+                    links[new_title.strip()] = new_url.strip()
+                    self.db.update_company_links(company_id, links)
+                    st.success(f"Planilha '{new_title}' adicionada com sucesso!")
+                    st.rerun()
+                else:
+                    st.warning("Preencha o nome e a URL corretamente.")
+
+        st.markdown("---")
+        st.subheader("✏️ Editar ou Remover Planilhas")
+
+        if not links:
+            st.info("Sem planilhas para editar.")
+            return
+
+        updated_links = {}
+        to_remove = []
+
+        with st.form("form_update_links"):
+            for i, (name, url) in enumerate(links.items()):
+                col1, col2, col3 = st.columns([2.5, 2.5, 1])
+                with col1:
+                    edited_name = st.text_input(f"Nome #{i+1}", value=name, key=f"name_{i}")
+                with col2:
+                    edited_url = st.text_input(f"Link #{i+1}", value=url, key=f"url_{i}")
+                with col3:
+                    st.write("")
+                    st.write("")
+                    remove = st.checkbox("Remover", key=f"del_{i}")
+
+                if remove:
+                    to_remove.append(name)
+                elif edited_name and edited_url:
+                    updated_links[edited_name.strip()] = edited_url.strip()
+
+            save_submitted = st.form_submit_button("Salvar Alterações")
+            if save_submitted:
+                for item in to_remove:
+                    if item in updated_links:
+                        del updated_links[item]
+
+                self.db.update_company_links(company_id, updated_links)
+                st.success("Planilhas atualizadas com sucesso!")
+                st.rerun()
+
+
+if __name__ == "__main__":
+    app = SpreadsheetApp()
+    app.run()
