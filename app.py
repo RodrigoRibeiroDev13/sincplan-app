@@ -1,52 +1,35 @@
 import os
 import streamlit as st
-from pymongo import MongoClient
+from supabase import create_client, Client
 
 
 class DatabaseManager:
-    """Gerencia a persistência de dados e autenticação no MongoDB Atlas."""
+    """Gerencia a persistência de dados e autenticação no Supabase."""
 
     def __init__(self):
-        # Obtém a URI do MongoDB das Secrets do Streamlit ou das variáveis de ambiente
-        mongo_uri = None
-        if "MONGO_URI" in st.secrets:
-            mongo_uri = st.secrets["MONGO_URI"]
-        else:
-            mongo_uri = os.getenv("MONGO_URI")
+        url = st.secrets.get("SUPABASE_URL") or os.getenv("SUPABASE_URL")
+        key = st.secrets.get("SUPABASE_KEY") or os.getenv("SUPABASE_KEY")
 
-        if not mongo_uri:
-            st.error("⚠️ Configuração MONGO_URI não encontrada em secrets.toml ou variáveis de ambiente!")
+        if not url or not key:
+            st.error("⚠️ Configuração SUPABASE_URL ou SUPABASE_KEY não encontrada em secrets.toml!")
             st.stop()
 
         try:
-            # Inicializa o cliente MongoDB com timeout de seleção de servidor (5 segundos)
-            self.client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
-            self.db = self.client["sincplan_db"]
-            self.collection = self.db["companies"]
-
-            # Teste rápido de conexão/autenticação
-            self.client.admin.command('ping')
-
-            # Inicializa empresas padrão se a coleção estiver vazia
+            self.client: Client = create_client(url, key)
             self._initialize_defaults()
         except Exception as e:
-            st.error(f"❌ Erro ao conectar ao MongoDB Atlas: {e}")
-            st.info(
-                "💡 **Dicas para solução:**\n"
-                "1. Verifique se a senha do seu usuário do MongoDB Atlas contém apenas letras e números (sem símbolos como `@`, `#`, `!`).\n"
-                "2. Confirme se o IP `0.0.0.0/0` está liberado em **Network Access** no MongoDB Atlas.\n"
-                "3. Garanta que a variável `MONGO_URI` em **Secrets** do Streamlit Cloud está correta."
-            )
+            st.error(f"❌ Erro ao conectar ao Supabase: {e}")
             st.stop()
 
     def _initialize_defaults(self):
-        """Cria as empresas padrão (AVEP e UNIR) com senhas limpas se ainda não existirem."""
-        if self.collection.count_documents({}) == 0:
+        """Insere as empresas padrão se a tabela estiver vazia."""
+        res = self.client.table("companies").select("id", count="exact").execute()
+        if res.count == 0:
             default_companies = [
                 {
                     "company_id": "AVEP",
                     "name": "AVEP",
-                    "password": "AVEP2026",  # Senha ajustada sem caracteres especiais
+                    "password": "AVEP2026Password",
                     "links": {
                         "Controle de estoque operacional MG": "https://docs.google.com/spreadsheets/d/1SQIxPikyS_N0bp-Uht5Hq6mfrHqVnj158a6YFTLqVxw/edit?usp=sharing",
                         "Tabela de veículos de passeio aceitos AVEP": "https://docs.google.com/spreadsheets/d/1cuVulo4_LR6F7ALg1WzlGPmxbQWaTKE2NTmELu82X4E/edit?hl=pt-br&gid=803974951#gid=803974951",
@@ -56,91 +39,68 @@ class DatabaseManager:
                 {
                     "company_id": "UNIR",
                     "name": "UNIR",
-                    "password": "UNIR2026",  # Senha ajustada sem caracteres especiais
+                    "password": "UNIR2026Password",
                     "links": {},
                 },
             ]
-            self.collection.insert_many(default_companies)
+            self.client.table("companies").insert(default_companies).execute()
 
     def get_all_companies(self) -> list:
-        """Retorna a lista de todas as empresas cadastradas."""
-        return list(self.collection.find({}, {"_id": 0}))
+        res = self.client.table("companies").select("company_id, name").execute()
+        return res.data or []
 
     def get_company(self, company_id: str) -> dict:
-        """Busca os dados de uma empresa específica."""
-        return self.collection.find_one({"company_id": company_id}, {"_id": 0})
+        res = self.client.table("companies").select("*").eq("company_id", company_id).execute()
+        return res.data[0] if res.data else {}
 
     def authenticate(self, company_id: str, password: str) -> bool:
-        """Autentica a senha de uma empresa."""
         company = self.get_company(company_id)
-        if company and company.get("password") == password:
-            return True
-        return False
+        return company.get("password") == password if company else False
 
     def update_company_links(self, company_id: str, links: dict):
-        """Atualiza os links das planilhas de uma empresa."""
-        self.collection.update_one(
-            {"company_id": company_id},
-            {"$set": {"links": links}}
-        )
+        self.client.table("companies").update({"links": links}).eq("company_id", company_id).execute()
 
     def save_new_company(self, name: str, password: str):
-        """Cadastra uma nova empresa no MongoDB."""
         company_id = name.strip().upper().replace(" ", "_")
-        self.collection.update_one(
-            {"company_id": company_id},
-            {
-                "$set": {
-                    "company_id": company_id,
-                    "name": name.strip(),
-                    "password": password.strip(),
-                    "links": {},
-                }
-            },
-            upsert=True,
-        )
+        payload = {
+            "company_id": company_id,
+            "name": name.strip(),
+            "password": password.strip(),
+            "links": {},
+        }
+        self.client.table("companies").upsert(payload, on_conflict="company_id").execute()
 
 
 class SpreadsheetApp:
-    """Controla a interface gráfica e o fluxo da aplicação Streamlit."""
-
     def __init__(self):
         self.db = DatabaseManager()
         self.logo_path = "logo.png"
 
     def run(self):
-        st.set_page_config(
-            page_title="Sincplan", page_icon="📊", layout="centered"
-        )
+        st.set_page_config(page_title="Sincplan", page_icon="📊", layout="centered")
 
-        # Exibição da logomarca
         if os.path.exists(self.logo_path) or self.logo_path.startswith("http"):
             st.image(self.logo_path, width=200)
 
         st.title("📊 Sincplan")
 
-        # 1. Inicializa estado da sessão
         if "logged_in" not in st.session_state:
             st.session_state.logged_in = False
             st.session_state.current_company_id = None
 
-        # 2. SE NÃO ESTIVER LOGADO -> MOSTRA TELA DE LOGIN E BLOQUEIA COM st.stop()
         if not st.session_state.logged_in:
             self.render_login_screen()
             st.stop()
 
-        # 3. SE ESTIVER LOGADO -> MOSTRA A INTERFACE PRINCIPAL
         company_data = self.db.get_company(st.session_state.current_company_id)
         company_name = company_data.get("name", st.session_state.current_company_id)
 
-        # Barra Lateral
         st.sidebar.markdown(f"### 🏢 Empresa Ativa:\n**{company_name}**")
         if st.sidebar.button("🚪 Sair / Logout"):
             st.session_state.logged_in = False
             st.session_state.current_company_id = None
             st.rerun()
 
-        # Cadastro de Novas Empresas na Barra Lateral
         st.sidebar.markdown("---")
         with st.sidebar.expander("➕ Cadastrar Nova Empresa"):
             with st.form("form_add_company"):
@@ -156,10 +116,7 @@ class SpreadsheetApp:
                     else:
                         st.warning("Preencha todos os campos do cadastro.")
 
-        # Conteúdo Principal
-        tab_view, tab_admin = st.tabs(
-            ["📂 Acessar Planilhas", "⚙️ Gerenciar Links"]
-        )
+        tab_view, tab_admin = st.tabs(["📂 Acessar Planilhas", "⚙️ Gerenciar Links"])
 
         with tab_view:
             self.render_view_tab(company_data)
