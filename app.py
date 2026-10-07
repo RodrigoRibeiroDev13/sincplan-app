@@ -7,28 +7,46 @@ class DatabaseManager:
     """Gerencia a persistência de dados e autenticação no MongoDB Atlas."""
 
     def __init__(self):
-        # Obtém a URI do MongoDB a partir das variáveis do Streamlit (local ou cloud)
-        mongo_uri = st.secrets.get("MONGO_URI") or os.getenv("MONGO_URI")
+        # Obtém a URI do MongoDB das Secrets do Streamlit ou das variáveis de ambiente
+        mongo_uri = None
+        if "MONGO_URI" in st.secrets:
+            mongo_uri = st.secrets["MONGO_URI"]
+        else:
+            mongo_uri = os.getenv("MONGO_URI")
 
         if not mongo_uri:
-            st.error("⚠️ Configuração do MongoDB não encontrada em secrets.toml ou variáveis de ambiente!")
+            st.error("⚠️ Configuração MONGO_URI não encontrada em secrets.toml ou variáveis de ambiente!")
             st.stop()
 
-        self.client = MongoClient(mongo_uri)
-        self.db = self.client["sincplan_db"]
-        self.collection = self.db["companies"]
+        try:
+            # Inicializa o cliente MongoDB com timeout de seleção de servidor (5 segundos)
+            self.client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+            self.db = self.client["sincplan_db"]
+            self.collection = self.db["companies"]
 
-        # Inicializa empresas padrão se o banco estiver vazio
-        self._initialize_defaults()
+            # Teste rápido de conexão/autenticação
+            self.client.admin.command('ping')
+
+            # Inicializa empresas padrão se a coleção estiver vazia
+            self._initialize_defaults()
+        except Exception as e:
+            st.error(f"❌ Erro ao conectar ao MongoDB Atlas: {e}")
+            st.info(
+                "💡 **Dicas para solução:**\n"
+                "1. Verifique se a senha do seu usuário do MongoDB Atlas contém apenas letras e números (sem símbolos como `@`, `#`, `!`).\n"
+                "2. Confirme se o IP `0.0.0.0/0` está liberado em **Network Access** no MongoDB Atlas.\n"
+                "3. Garanta que a variável `MONGO_URI` em **Secrets** do Streamlit Cloud está correta."
+            )
+            st.stop()
 
     def _initialize_defaults(self):
-        """Cria as empresas padrão (AVEP e UNIR) se ainda não existirem."""
+        """Cria as empresas padrão (AVEP e UNIR) com senhas limpas se ainda não existirem."""
         if self.collection.count_documents({}) == 0:
             default_companies = [
                 {
                     "company_id": "AVEP",
                     "name": "AVEP",
-                    "password": "AVEP2026#",
+                    "password": "AVEP2026",  # Senha ajustada sem caracteres especiais
                     "links": {
                         "Controle de estoque operacional MG": "https://docs.google.com/spreadsheets/d/1SQIxPikyS_N0bp-Uht5Hq6mfrHqVnj158a6YFTLqVxw/edit?usp=sharing",
                         "Tabela de veículos de passeio aceitos AVEP": "https://docs.google.com/spreadsheets/d/1cuVulo4_LR6F7ALg1WzlGPmxbQWaTKE2NTmELu82X4E/edit?hl=pt-br&gid=803974951#gid=803974951",
@@ -38,7 +56,7 @@ class DatabaseManager:
                 {
                     "company_id": "UNIR",
                     "name": "UNIR",
-                    "password": "UNIR2026$",
+                    "password": "UNIR2026",  # Senha ajustada sem caracteres especiais
                     "links": {},
                 },
             ]
@@ -109,7 +127,7 @@ class SpreadsheetApp:
         # 2. SE NÃO ESTIVER LOGADO -> MOSTRA TELA DE LOGIN E BLOQUEIA COM st.stop()
         if not st.session_state.logged_in:
             self.render_login_screen()
-            st.stop()  # Interrompe a execução para não exibir as planilhas antes do login
+            st.stop()
 
         # 3. SE ESTIVER LOGADO -> MOSTRA A INTERFACE PRINCIPAL
         company_data = self.db.get_company(st.session_state.current_company_id)
@@ -151,7 +169,7 @@ class SpreadsheetApp:
 
     def render_login_screen(self):
         st.subheader("🔑 Autenticação de Acesso")
-        
+
         companies = self.db.get_all_companies()
         if not companies:
             st.error("Nenhuma empresa cadastrada no sistema.")
@@ -187,62 +205,4 @@ class SpreadsheetApp:
                 st.link_button("Abrir 🔗", url)
 
     def render_admin_tab(self, company_data: dict):
-        company_id = company_data.get("company_id")
-        links = company_data.get("links", {})
-
-        st.subheader("➕ Adicionar Nova Planilha")
-        with st.form("form_add_link", clear_on_submit=True):
-            new_title = st.text_input("Nome da Planilha:")
-            new_url = st.text_input("URL da Planilha:")
-            add_submitted = st.form_submit_button("Adicionar Planilha")
-
-            if add_submitted:
-                if new_title.strip() and new_url.strip():
-                    links[new_title.strip()] = new_url.strip()
-                    self.db.update_company_links(company_id, links)
-                    st.success(f"Planilha '{new_title}' adicionada com sucesso!")
-                    st.rerun()
-                else:
-                    st.warning("Preencha o nome e a URL corretamente.")
-
-        st.markdown("---")
-        st.subheader("✏️ Editar ou Remover Planilhas")
-
-        if not links:
-            st.info("Sem planilhas para editar.")
-            return
-
-        updated_links = {}
-        to_remove = []
-
-        with st.form("form_update_links"):
-            for i, (name, url) in enumerate(links.items()):
-                col1, col2, col3 = st.columns([2.5, 2.5, 1])
-                with col1:
-                    edited_name = st.text_input(f"Nome #{i+1}", value=name, key=f"name_{i}")
-                with col2:
-                    edited_url = st.text_input(f"Link #{i+1}", value=url, key=f"url_{i}")
-                with col3:
-                    st.write("")
-                    st.write("")
-                    remove = st.checkbox("Remover", key=f"del_{i}")
-
-                if remove:
-                    to_remove.append(name)
-                elif edited_name and edited_url:
-                    updated_links[edited_name.strip()] = edited_url.strip()
-
-            save_submitted = st.form_submit_button("Salvar Alterações")
-            if save_submitted:
-                for item in to_remove:
-                    if item in updated_links:
-                        del updated_links[item]
-
-                self.db.update_company_links(company_id, updated_links)
-                st.success("Planilhas atualizadas com sucesso!")
-                st.rerun()
-
-
-if __name__ == "__main__":
-    app = SpreadsheetApp()
-    app.run()
+        company_id = company_data.get("company_id
